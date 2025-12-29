@@ -1,0 +1,402 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>The Dimensional Engine - V14 Primary Ability</title>
+  <style>
+    body { margin: 0; padding: 0; overflow: hidden; background: #1e1e1e; font-family: 'Courier New', Courier, monospace; }
+    canvas { display: block; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+</head>
+<body>
+
+
+<script>
+// --- THE DIMENSIONAL ENGINE V14 ---
+// FIXED: Tool 1 is now the SPECIAL ABILITY in Dim Mode.
+// FIXED: No boring box on Key 1 in Dim Mode.
+
+
+const Engine = Matter.Engine;
+const World = Matter.World;
+const Bodies = Matter.Bodies;
+const Composite = Matter.Composite;
+const Constraint = Matter.Constraint;
+const Mouse = Matter.Mouse;
+const MouseConstraint = Matter.MouseConstraint;
+const Body = Matter.Body;
+const Vector = Matter.Vector;
+
+
+var engine, world, mConstraint;
+var gameState = "MENU"; 
+var gameMode = "DIMENSIONAL"; 
+var currentDimension = 2; 
+var activeTool = "DIMENSION"; // Default to special ability
+var universeColor = [30, 30, 30]; 
+var splitters = [];
+var portals = [];
+
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  rectMode(CENTER); textAlign(CENTER); noStroke();
+
+
+  engine = Engine.create();
+  world = engine.world;
+
+
+  // Mouse
+  var mouse = Mouse.create(document.body);
+  mouse.pixelRatio = pixelDensity();
+  mConstraint = MouseConstraint.create(engine, { 
+    mouse: mouse, 
+    constraint: { stiffness: 0.1, render: { visible: false } }
+  });
+}
+
+
+function draw() {
+  // 1. MENU
+  if (gameState === "MENU") { drawMenu(); return; }
+
+
+  // 2. FLAMETHROWER (Hold F)
+  if (keyIsDown(70)) spawnFlame(mouseX, mouseY);
+
+
+  // 3. BACKGROUNDS
+  if (gameState === "SPACE") {
+    background(0); fill(255); randomSeed(10); 
+    for(var i=0; i<100; i++) ellipse(random(width), random(height), 2);
+    applySpacePhysics();
+  } else if (gameMode === "SANDBOX") {
+    background(50, 50, 60); 
+  } else {
+    // Dimensional Backgrounds
+    if (currentDimension === 8) background(0, 20, 30); 
+    else if (currentDimension === 9) {
+        background(random(20,40), random(0,10), random(0,10)); // Glitch BG
+        if(frameCount % 5 === 0) translate(random(-5,5), random(-5,5)); 
+    }
+    else background(universeColor);
+  }
+
+
+  Engine.update(engine);
+  checkLogic(); 
+  drawUI();
+
+
+  // 4. RENDER
+  var bodies = Composite.allBodies(world);
+  if (currentDimension === 8 && gameState === "PLAY" && gameMode === "DIMENSIONAL") drawWebConnections(bodies);
+
+
+  for (var i = 0; i < bodies.length; i++) {
+    var b = bodies[i];
+    if (b.render.visible === false) continue;
+
+
+    // FLAME LOGIC
+    if (b.label === "FLAME") {
+        b.render.opacity -= 0.02; Body.scale(b, 0.95, 0.95);
+        if(b.area < 1) { World.remove(world, b); continue; }
+    }
+
+
+    // TRAILS
+    if (b.is4D || b.isTracer) {
+      if(!b.trail) b.trail = [];
+      b.trail.push({x: b.position.x, y: b.position.y});
+      if(b.trail.length > (b.isTracer?100:15)) b.trail.shift();
+      
+      if(b.isTracer) {
+        noFill(); strokeWeight(4); colorMode(HSB); beginShape();
+        for(var j=0; j<b.trail.length; j++) {
+           stroke((j * 5 + frameCount * 2) % 360, 100, 100); vertex(b.trail[j].x, b.trail[j].y);
+        }
+        endShape(); colorMode(RGB);
+      } else {
+        drawTrail(b.trail);
+      }
+    }
+
+
+    push();
+    translate(b.position.x, b.position.y);
+    rotate(b.angle);
+    drawBodyShape(b);
+    pop();
+  }
+  drawConstraints();
+
+
+  // Gun Cursor
+  if (activeTool === 8) {
+    stroke(255, 0, 0); noFill(); strokeWeight(2); ellipse(mouseX, mouseY, 20, 20);
+    line(mouseX-15, mouseY, mouseX+15, mouseY); line(mouseX, mouseY-15, mouseX, mouseY+15);
+  }
+}
+
+
+// --- CONTROLS ---
+
+
+function keyPressed() {
+  if (gameState === "MENU") return; 
+  if (key === 'Escape') { gameState = "MENU"; World.clear(world); Engine.clear(engine); return; }
+
+
+  // --- DIMENSION SWITCHING (A / D) ---
+  if (gameMode === "DIMENSIONAL") {
+      if (key === 'd' || key === 'D') changeDimension(1);
+      if (key === 'a' || key === 'A') changeDimension(-1);
+  }
+
+
+  // --- TOOL SELECTION (1-0) ---
+  if (key >= '0' && key <= '9') {
+      var t = parseInt(key);
+      if (t === 0) t = 10;
+      
+      // *** THE FIX: Key 1 in Dim Mode = ABILITY ***
+      if (gameMode === "DIMENSIONAL" && t === 1) {
+          activeTool = "DIMENSION"; // This sets it to the Dimension Spawner
+      }
+      // Ban Saw(5) and Grinder(6) in Dim Mode
+      else if (gameMode === "DIMENSIONAL" && (t === 5 || t === 6)) {
+          // Do nothing
+      } 
+      else {
+          activeTool = t;
+      }
+  }
+
+
+  // MISC
+  if (key === 's' || key === 'S') {
+    gameState = "SPACE"; engine.world.gravity.y = 0; World.clear(world);
+    World.add(world, [Bodies.circle(width/2, height/2, 60, { isStatic: true, label: "SUN" }), mConstraint]);
+  }
+  if (key === ' ') {
+    World.clear(world); Engine.clear(engine); portals = []; splitters = [];
+    setupSandbox();
+  }
+  if (key === 'k') spawnKhabyHands(mouseX, mouseY);
+}
+
+
+function changeDimension(dir) {
+    currentDimension += dir;
+    if (currentDimension > 9) currentDimension = 1;
+    if (currentDimension < 1) currentDimension = 9;
+    
+    // Physics Resets
+    resetUniverseColors();
+    if(currentDimension === 8) engine.world.gravity.y = 0.2; 
+    if(currentDimension === 9) randomizePhysics();
+    
+    // Auto-select the Ability tool when switching dimensions
+    activeTool = "DIMENSION"; 
+}
+
+
+function mousePressed() {
+  if (gameState === "MENU") {
+    if (mouseY > height/2 - 60 && mouseY < height/2 - 10) { gameState = "PLAY"; gameMode = "DIMENSIONAL"; setupSandbox(); }
+    if (mouseY > height/2 + 10 && mouseY < height/2 + 60) { gameState = "PLAY"; gameMode = "SANDBOX"; setupSandbox(); }
+    return;
+  }
+
+
+  if (mConstraint.body) return; // Don't spawn if dragging
+  var mx = mouseX; var my = mouseY;
+
+
+  if (gameState === "SPACE") { spawnSpaceObject(mx, my); return; }
+  if (activeTool === 9) return; // Hand Mode
+
+
+  // --- SPAWN LOGIC ---
+  if (activeTool === "DIMENSION") {
+      spawnDimensionalObjects(mx, my); // This is what Key 1 does in Dim Mode
+  } 
+  else {
+      // Standard Tools
+      if (activeTool === 1) World.add(world, Bodies.rectangle(mx, my, 50, 50, { label: "BOX" })); // Sandbox Box
+      if (activeTool === 2) World.add(world, Bodies.circle(mx, my, 25, { label: "BALL" }));
+      if (activeTool === 3) spawnChain(mx, my);
+      if (activeTool === 4) spawnRainbowChain(mx, my);
+      if (activeTool === 5) spawnSaw(mx, my);
+      if (activeTool === 6) spawnMeatGrinder(mx, my);
+      if (activeTool === 7) World.add(world, Bodies.rectangle(mx, my, 20, 100, { label: "SWORD", density: 0.05 })); 
+      if (activeTool === 8) fireGun(mx, my);
+      if (activeTool === 10) spawnCar(mx, my); 
+  }
+}
+
+
+// --- LOGIC ---
+function checkLogic() {
+  if (gameState !== "PLAY") return;
+  var bodies = Composite.allBodies(world);
+  
+  // Animation & Grinder Logic
+  for(var b of bodies) {
+     if(b.label === "GEAR") { Body.setAngle(b, b.angle + 0.15); Body.setAngularVelocity(b, 0.15); }
+     if(b.label === "SAW") { Body.setAngularVelocity(b, 0.5); } 
+     if(!b.isStatic && b.label !== "SAW" && b.label !== "GEAR" && b.label !== "GRINDER") {
+        var allBodies = Composite.allBodies(world);
+        for(var other of allBodies) {
+           if((other.label === "SAW" || other.label === "GEAR") && Matter.Bounds.overlaps(b.bounds, other.bounds)) {
+               if(dist(b.position.x, b.position.y, other.position.x, other.position.y) < 80) {
+                   Body.scale(b, 0.9, 0.9); 
+                   Body.setVelocity(b, {x: random(-10, 10), y: random(-20, -5)}); 
+                   if(b.area < 50) World.remove(world, b); 
+               }
+           }
+        }
+     }
+     // Glitch Dimension 9 Logic
+     if (currentDimension === 9 && gameMode === "DIMENSIONAL" && !b.isStatic) {
+         if(frameCount % 20 === 0) {
+             Body.setVelocity(b, {x: random(-10, 10), y: random(-10, 10)});
+             b.render.fillStyle = (frameCount%2===0) ? "#fff" : "#000"; 
+         }
+     }
+  }
+
+
+  // 8D Attraction
+  if (currentDimension === 8 && gameMode === "DIMENSIONAL") {
+    for (var i = 0; i < bodies.length; i++) {
+      for (var j = i + 1; j < bodies.length; j++) {
+        if(bodies[i].isStatic || bodies[j].isStatic) continue;
+        var d = Vector.magnitude(Vector.sub(bodies[i].position, bodies[j].position));
+        if (d < 150) {
+          var force = Vector.sub(bodies[j].position, bodies[i].position);
+          var normal = Vector.normalise(force);
+          Body.applyForce(bodies[i], bodies[i].position, Vector.mult(normal, 0.0001));
+          Body.applyForce(bodies[j], bodies[j].position, Vector.mult(normal, -0.0001));
+        }
+      }
+    }
+  }
+  applyDimensionalLogic(bodies);
+}
+
+
+// --- DIMENSIONAL OBJECT SPAWNING ---
+function spawnDimensionalObjects(mx, my) {
+  if (currentDimension === 1) { var b = Bodies.rectangle(mx, my, 50, 50, {label:"1D"}); b.is1D=true; b.fixedY=my; World.add(world, b); }
+  if (currentDimension === 2) World.add(world, Bodies.rectangle(mx, my, 50, 50, {label:"BOX"})); // 2D defaults to box
+  if (currentDimension === 3) { var c = Bodies.rectangle(mx, my, 40, 40, { label: "3D_CUBE", render: {fillStyle: '#4CAF50'} }); var c2 = Bodies.rectangle(mx+10, my-10, 40, 40, { label: "3D_CUBE", render: {fillStyle: '#81C784'} }); var con = Constraint.create({ bodyA: c, bodyB: c2, stiffness: 0.9, render:{lineWidth:3} }); World.add(world, [c, c2, con]); }
+  if (currentDimension === 4) { var t=Bodies.circle(mx,my,25,{label:"4D", render:{fillStyle: '#2196F3'}}); t.is4D=true; World.add(world, t); }
+  if (currentDimension === 5) { var s=Bodies.rectangle(mx,my,10,150,{isStatic:true, isSensor:true, label:"SPLITTER", angle:PI/6, render:{fillStyle:'#9C27B0'}}); splitters.push(s); World.add(world,s); }
+  if (currentDimension === 6) { var p1=Bodies.circle(mx-60,my,30,{isStatic:true,isSensor:true,label:"PORTAL_A", render:{fillStyle:'#00BCD4'}}); var p2=Bodies.circle(mx+60,my,30,{isStatic:true,isSensor:true,label:"PORTAL_B", render:{fillStyle:'#FF9800'}}); portals.push({a:p1,b:p2}); World.add(world,[p1,p2]); }
+  if (currentDimension === 7) { World.add(world, Bodies.polygon(mx, my, floor(random(3,8)), random(20,50), { label: "BOX", render:{fillStyle: '#FF5722'} })); }
+  if (currentDimension === 8) { World.add(world, Bodies.circle(mx, my, 15, { label: "8D_NODE", frictionAir: 0.05, render:{fillStyle: '#E0F2F1'} })); }
+  if (currentDimension === 9) { World.add(world, Bodies.rectangle(mx, my, 50, 50, { label: "GLITCH_BOX", restitution: 1.2 })); }
+}
+
+
+function applyDimensionalLogic(bodies) {
+  for(var i=0; i<bodies.length; i++) { if(bodies[i].is1D) { Body.setPosition(bodies[i], { x: bodies[i].position.x, y: bodies[i].fixedY }); Body.setAngle(bodies[i], 0); } }
+  for (var s of splitters) { for (var b of bodies) { if(b.isStatic || b.label === "CLONE") continue; if(Matter.Bounds.overlaps(s.bounds, b.bounds)) { if(frameCount % 10 === 0) { var clone = Bodies.rectangle(b.position.x, b.position.y, 30, 30, { label: "CLONE", render:{fillStyle:'red'}}); Body.setVelocity(clone, {x: random(-5,5), y: -5}); World.add(world, clone); } } } }
+  for (var p of portals) { for (var b of bodies) { if(b.isStatic) continue; if(Vector.magnitude(Vector.sub(b.position, p.a.position)) < 30) { Body.setPosition(b, p.b.position); Body.setVelocity(b, Vector.mult(b.velocity, 1.1)); } else if(Vector.magnitude(Vector.sub(b.position, p.b.position)) < 30) { Body.setPosition(b, p.a.position); Body.setVelocity(b, Vector.mult(b.velocity, 1.1)); } } }
+}
+
+
+// --- DRAWING & UI ---
+function drawUI() {
+  fill(255); textSize(20);
+  if(gameState === "SPACE") { text("MODE: SPACE | Shift+Click: Black Hole", width/2, 30); return; }
+   
+  var tName = "UNKNOWN";
+  if(activeTool === "DIMENSION") tName = "DIMENSION ABILITY"; // Special name for special tool
+  else if(activeTool === 1) tName = "BOX"; // Sandbox Box
+  else if(activeTool === 2) tName = "BALL";
+  else if(activeTool === 3) tName = "CHAIN"; else if(activeTool === 4) tName = "RAINBOW";
+  else if(activeTool === 5) tName = "SAW"; else if(activeTool === 6) tName = "GRINDER";
+  else if(activeTool === 7) tName = "SWORD"; else if(activeTool === 8) tName = "GUN";
+  else if(activeTool === 9) tName = "HAND"; else if(activeTool === 10) tName = "CAR";
+
+
+  if (gameMode === "SANDBOX") {
+     text("SANDBOX | TOOL: " + tName + " (Press 1-0)", width/2, 30);
+     return;
+  }
+
+
+  var dimName = "DIMENSION " + currentDimension;
+  var expl = "";
+  if(currentDimension===1) { dimName="1D LINE"; expl="Ability: Spawn Line Node"; }
+  if(currentDimension===2) { dimName="2D STANDARD"; expl="Ability: Standard Box"; }
+  if(currentDimension===3) { dimName="3D HYPERCUBES"; expl="Ability: Spawn Hypercube"; }
+  if(currentDimension===4) { dimName="4D TIME"; expl="Ability: Spawn Time Ball"; }
+  if(currentDimension===5) { dimName="5D MULTIVERSE"; expl="Ability: Spawn Splitter"; }
+  if(currentDimension===6) { dimName="6D WORMHOLES"; expl="Ability: Spawn Portals"; }
+  if(currentDimension===7) { dimName="7D CHAOS"; expl="Ability: Spawn Random Polygon"; }
+  if(currentDimension===8) { dimName="8D THE WEB"; expl="Ability: Spawn Web Node"; }
+  if(currentDimension===9) { dimName="9D GLITCH"; expl="Ability: Spawn Glitch Box"; }
+
+
+  text(dimName + " | TOOL: " + tName, width/2, 30);
+  textSize(14); fill(200);
+  text("A/D: Traverse | Press 1: " + expl + " | 2-0: Extra Tools", width/2, 55);
+}
+
+
+function drawBodyShape(b) {
+  stroke(0); strokeWeight(2);
+  if(b.label === "FLAME") { noStroke(); fill(255, random(100,200), 0, b.render.opacity * 255); ellipse(0,0,b.circleRadius*2); return; }
+  if(b.label==="KHABY") { fill(200, 180, 150); rect(0,0,60,20); return; }
+  if(b.label==="SUN") { fill(255,200,0); noStroke(); ellipse(0,0,b.circleRadius*2); return; }
+  if(b.label==="BLACK_HOLE") { fill(0); stroke(255); ellipse(0,0,40); return; }
+  if(b.label.includes("PORTAL")) { fill(b.render.fillStyle); ellipse(0,0,60); fill(0); ellipse(0,0,40); return; }
+  if(b.label.includes("GRINDER")) { fill(80); rect(0,0,20,400); return; } 
+  if(b.label==="GEAR" || b.label==="SAW") { 
+      fill(150); 
+      if(b.label==="SAW") { fill(200); beginShape(); for(let i=0; i<TWO_PI; i+=0.5) { vertex(cos(i)*60, sin(i)*60); vertex(cos(i+0.2)*50, sin(i+0.2)*50); } endShape(CLOSE); }
+      else ellipse(0,0,80); 
+      return; 
+  }
+  if(b.label==="BULLET") { fill(255,255,0); ellipse(0,0,10); return; }
+  if(b.label==="CAR") { fill(255,50,50); rect(0,0,100,30); return; }
+
+
+  if(b.render.fillStyle) fill(b.render.fillStyle);
+  else fill(255);
+
+
+  if (b.circleRadius) ellipse(0, 0, b.circleRadius * 2);
+  else rect(0, 0, b.bounds.max.x - b.bounds.min.x, b.bounds.max.y - b.bounds.min.y);
+}
+
+
+// ... HELPERS ...
+function spawnFlame(x, y) { var f = Bodies.circle(x, y, random(5, 10), { label: "FLAME", isSensor: true, frictionAir: 0.05, density: 0.001 }); var vx = (mouseX - pmouseX) * 0.5 + random(-2, 2); var vy = (mouseY - pmouseY) * 0.5 + random(-2, 2); Body.setVelocity(f, {x: vx, y: vy}); World.add(world, f); }
+function drawMenu() { background(20); fill(255); textSize(40); text("DIMENSIONAL ENGINE V14", width/2, height/2 - 120); fill(50, 50, 80); rect(width/2, height/2 - 35, 300, 50, 10); fill(255); textSize(24); text("DIMENSIONAL MODE", width/2, height/2 - 25); fill(80, 50, 50); rect(width/2, height/2 + 35, 300, 50, 10); fill(255); textSize(24); text("SANDBOX CHAOS", width/2, height/2 + 45); }
+function fireGun(mx, my) { var bullet = Bodies.circle(mx, my, 5, { label: "BULLET", density: 0.1 }); Body.setVelocity(bullet, {x: 25, y: -2}); World.add(world, bullet); }
+function spawnChain(x, y) { var group = Body.nextGroup(true); var prev = null; for (var i = 0; i < 5; i++) { var link = Bodies.rectangle(x, y + i * 30, 20, 40, { collisionFilter: { group: group } }); World.add(world, link); if (prev) { World.add(world, Constraint.create({ bodyA: prev, bodyB: link, length: 35, stiffness: 0.9 })); } else { World.add(world, Constraint.create({ bodyB: link, pointB: {x:0, y:-15}, pointA: {x:x, y:y}, stiffness: 0.9 })); } prev = link; } }
+function spawnRainbowChain(x, y) { var group = Body.nextGroup(true); var p1 = Bodies.circle(x, y, 20, { isStatic: true, label: "STATIC", collisionFilter: { group: group } }); var p2 = Bodies.circle(x + 100, y, 20, { density: 0.04, label: "HEAVY", collisionFilter: { group: group } }); var p3 = Bodies.circle(x + 200, y, 10, { label: "TRACER", frictionAir: 0, collisionFilter: { group: group } }); var s1 = Constraint.create({ bodyA: p1, bodyB: p2, length: 150, stiffness: 0.5 }); var s2 = Constraint.create({ bodyA: p2, bodyB: p3, length: 150, stiffness: 0.5 }); World.add(world, [p1, p2, p3, s1, s2]); Body.setVelocity(p2, { x: 20, y: 0 }); p3.isTracer = true; }
+function spawnSaw(x, y) { var saw = Bodies.circle(x, y, 60, { label: "SAW", friction: 0, frictionAir: 0, restitution: 0 }); var pin = Constraint.create({ bodyA: saw, pointA: {x:0,y:0}, pointB: {x:x,y:y}, length: 0, stiffness: 1 }); World.add(world, [saw, pin]); }
+function spawnMeatGrinder(x, y) { var wallL = Bodies.rectangle(x - 60, y - 100, 20, 400, { isStatic: true, angle: 0.1, label: "GRINDER" }); var wallR = Bodies.rectangle(x + 60, y - 100, 20, 400, { isStatic: true, angle: -0.1, label: "GRINDER" }); var g1 = Bodies.polygon(x - 20, y - 50, 8, 40, { isStatic: true, label: "GEAR" }); var g2 = Bodies.polygon(x + 20, y + 20, 8, 40, { isStatic: true, label: "GEAR" }); var g3 = Bodies.polygon(x - 20, y + 90, 8, 40, { isStatic: true, label: "GEAR" }); var binB = Bodies.rectangle(x, y + 250, 150, 20, { isStatic: true }); World.add(world, [wallL, wallR, g1, g2, g3, binB]); }
+function spawnCar(x, y) { var group = Body.nextGroup(true); var chassis = Bodies.rectangle(x, y, 100, 30, { label: "CAR", density: 0.02, collisionFilter: { group: group } }); var w1 = Bodies.circle(x - 35, y + 20, 20, { friction: 0.8, density: 0.05, label: "WHEEL", collisionFilter: { group: group } }); var w2 = Bodies.circle(x + 35, y + 20, 20, { friction: 0.8, density: 0.05, label: "WHEEL", collisionFilter: { group: group } }); var ax1 = Constraint.create({ bodyA: chassis, pointA: {x:-35,y:20}, bodyB: w1, stiffness: 0.2, length: 0 }); var ax2 = Constraint.create({ bodyA: chassis, pointA: {x:35,y:20}, bodyB: w2, stiffness: 0.2, length: 0 }); World.add(world, [chassis, w1, w2, ax1, ax2]); }
+function spawnKhabyHands(x, y) { var palmL = Bodies.rectangle(x - 50, y, 60, 20, { isStatic: true, angle: -0.2, label: "KHABY" }); var palmR = Bodies.rectangle(x + 50, y, 60, 20, { isStatic: true, angle: 0.2, label: "KHABY" }); World.add(world, [palmL, palmR]); }
+function randomizePhysics() { engine.world.gravity.y = random(-3, 3); engine.world.gravity.x = random(-1, 1); universeColor = [random(100,200), random(0,50), random(100,200)]; }
+function resetUniverseColors() { engine.world.gravity.y = 1; engine.world.gravity.x = 0; universeColor = [30, 30, 30]; }
+function setupSandbox() { activeTool = (gameMode === "SANDBOX") ? 1 : "DIMENSION"; engine.world.gravity.y = 1; engine.world.gravity.x = 0; var floor = Bodies.rectangle(width/2, height, width, 50, { isStatic: true }); var wallL = Bodies.rectangle(0, height/2, 50, height, { isStatic: true }); var wallR = Bodies.rectangle(width, height/2, 50, height, { isStatic: true }); World.add(world, [floor, wallL, wallR, mConstraint]); }
+function spawnSpaceObject(mx, my) { if (mouseButton === RIGHT || keyIsDown(SHIFT)) World.add(world, Bodies.circle(mx, my, 20, { label: "BLACK_HOLE", isStatic: true })); else { var planet = Bodies.circle(mx, my, random(10, 20), { label: "PLANET", frictionAir: 0, friction: 0 }); var dx = mx - width/2; var dy = my - height/2; var angle = Math.atan2(dy, dx); Body.setVelocity(planet, { x: 5 * Math.sin(angle), y: -5 * Math.cos(angle) }); World.add(world, planet); } }
+function applySpacePhysics() { var bodies = Composite.allBodies(world); for (var b of bodies) { if (b.isStatic) continue; for (var attractor of bodies) { if (attractor.label === "SUN" || attractor.label === "BLACK_HOLE") { var force = Vector.sub(attractor.position, b.position); var dist = Vector.magnitude(force); var distSq = dist * dist; if (attractor.label === "BLACK_HOLE" && dist < 30) { World.remove(world, b); continue; } if(distSq < 100) distSq = 100; var G = (attractor.label==="BLACK_HOLE") ? 5 : 0.5; Body.applyForce(b, b.position, Vector.mult(Vector.normalise(force), (G * b.mass)/distSq)); } } } }
+function drawTrail(t) { noFill(); stroke(255, 100); strokeWeight(2); beginShape(); for(var p of t) vertex(p.x, p.y); endShape(); }
+function drawWebConnections(bodies) { stroke(100, 255, 255, 100); strokeWeight(2); for (var i = 0; i < bodies.length; i++) { for (var j = i + 1; j < bodies.length; j++) { if(bodies[i].isStatic || bodies[j].isStatic) continue; var d = dist(bodies[i].position.x, bodies[i].position.y, bodies[j].position.x, bodies[j].position.y); if (d < 150) { stroke(100, 255, 255, map(d, 0, 150, 255, 0)); line(bodies[i].position.x, bodies[i].position.y, bodies[j].position.x, bodies[j].position.y); } } } }
+function drawConstraints() { var constraints = Composite.allConstraints(world); for (var c of constraints) { if (c.label === "Mouse Constraint") continue; var pA = c.bodyA ? Vector.add(c.bodyA.position, c.pointA) : c.pointA; var pB = c.bodyB ? Vector.add(c.bodyB.position, c.pointB) : c.pointB; stroke(255); line(pA.x, pA.y, pB.x, pB.y); } }
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+</script>
+</body>
+</html>
